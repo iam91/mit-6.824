@@ -1,5 +1,12 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"io"
+	"os"
+	"sort"
+)
+
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
@@ -44,4 +51,95 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	//
+	kvs := make([]KeyValue, 0, 1024)
+
+	for m := 0; m < nMap; m++ {
+		tmpName := reduceName(jobName, m, reduceTask)
+		tmpFile, err := os.Open(tmpName)
+		errorCheck(err)
+
+		enc := json.NewDecoder(tmpFile)
+		for {
+			var kv KeyValue
+			err := enc.Decode(&kv)
+			if err == io.EOF {
+				break
+			}
+			errorCheck(err)
+
+			kvs = append(kvs, kv)
+		}
+
+		tmpFile.Close()
+	}
+
+	out, err := os.Create(outFile)
+	errorCheck(err)
+	enc := json.NewEncoder(out)
+
+	// ----- by hash -----
+	if false {
+		t := map[string][]string{}
+		for _, kv := range kvs {
+			_, ok := t[kv.Key]
+			if !ok {
+				t[kv.Key] = make([]string, 0)
+			}
+			t[kv.Key] = append(t[kv.Key], kv.Value)
+		}
+		for k, v := range t {
+			vv := reduceF(k, v)
+			err := enc.Encode(&KeyValue{k, vv})
+			errorCheck(err)
+		}
+	}
+	// ----- by sort -----
+	if true {
+
+		sort.Slice(kvs, func (i, j int) bool {
+			return kvs[i].Key < kvs[j].Key
+		})
+
+		preKey := kvs[0].Key
+		preIdx := 0
+		n := len(kvs)
+
+		for i := 1; i < n; i++ {
+			if kvs[i].Key != preKey {
+				newKey := preKey
+
+				values := sliceValue(preIdx, i, kvs)
+
+				enc.Encode(&KeyValue{newKey, reduceF(newKey, values)})
+				preKey = kvs[i].Key
+				preIdx = i
+			}
+
+			if i == n - 1 {
+				newKey := kvs[i].Key
+
+				var startIdx int
+				if kvs[i].Key != preKey {
+					startIdx = preIdx + 1
+				} else {
+					startIdx = preIdx
+				}
+
+				values := sliceValue(startIdx, n, kvs)
+
+				enc.Encode(&KeyValue{newKey, reduceF(newKey, values)})
+			}
+		}
+
+	}
+
+	out.Close()
+}
+
+func sliceValue(startIdx, endIdx int, kvs []KeyValue) []string {
+	values := make([]string, 0)
+	for _, kv := range kvs[startIdx: endIdx] {
+		values = append(values, kv.Value)
+	}
+	return values
 }
