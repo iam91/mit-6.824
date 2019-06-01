@@ -96,9 +96,8 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 			ok := call(w, "Worker.DoTask", &doTaskArgs, new(struct{}))
 			if !ok {
 				fmt.Printf("Worker: RPC %s DoTask error\n", w)
-			} else {
-				wl.offer(w)
 			}
+			wl.offer(w)
 		}()
 	}
 
