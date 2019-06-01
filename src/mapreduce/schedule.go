@@ -3,42 +3,31 @@ package mapreduce
 import (
 	"fmt"
 	"sync"
-	"time"
 )
 
-type WorkerList struct {
-	mu sync.Mutex
-	workers map[string]bool
-}
-
-func (wl *WorkerList) offer(w string) {
-	wl.mu.Lock()
-	wl.workers[w] = true
-	wl.mu.Unlock()
-}
-
-func (wl *WorkerList) poll() string {
-	for {
-		for k, v := range wl.workers {
-			if v {
-				wl.workers[k] = false
-				return k
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-//type TaskList struct {
+//type WorkerList struct {
 //	mu sync.Mutex
-//	tasks map[int]bool
+//	workers map[string]bool
 //}
 //
-//func (tl *TaskList) offer(t int) {
-//	tl.mu.Lock()
-//	tl.tasks[i] = true
-//	tl.mu.Unlock()
+//func (wl *WorkerList) offer(w string) {
+//	wl.mu.Lock()
+//	wl.workers[w] = true
+//	wl.mu.Unlock()
 //}
+//
+//func (wl *WorkerList) poll() string {
+//	for {
+//		for k, v := range wl.workers {
+//			if v {
+//				wl.workers[k] = false
+//				return k
+//			}
+//		}
+//		time.Sleep(100 * time.Millisecond)
+//	}
+//}
+
 
 //
 // schedule() starts and waits for all tasks in the given phase (mapPhase
@@ -68,12 +57,9 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	//
 	// Your code here (Part III, Part IV).
 	//
-	wl := WorkerList{workers: map[string]bool{}}
-	go func() {
-		for w := range registerChan{
-			wl.offer(w)
-		}
-	}()
+
+	wg := sync.WaitGroup{}
+	wg.Add(nTasks)
 
 	for i := 0; i < nTasks; i++ {
 
@@ -90,16 +76,20 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 			TaskNumber: i,
 			NumOtherPhase: nOther}
 
-		w := wl.poll()
 
 		go func() {
-			ok := call(w, "Worker.DoTask", &doTaskArgs, new(struct{}))
+			w := <- registerChan
+			ok := call(w, "Worker.DoTask", &doTaskArgs, nil)
 			if !ok {
 				fmt.Printf("Worker: RPC %s DoTask error\n", w)
+			} else {
+				wg.Done()
 			}
-			wl.offer(w)
+			registerChan <- w
 		}()
 	}
+
+	wg.Wait()
 
 	fmt.Printf("Schedule: %v done\n", phase)
 }
