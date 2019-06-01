@@ -24,7 +24,7 @@ func (mr *Master) startRPCServer() {
 	os.Remove(mr.address) // only needed for "unix"
 	l, e := net.Listen("unix", mr.address)
 	if e != nil {
-		log.Fatal("RegstrationServer", mr.address, " error: ", e)
+		log.Fatal("RegistrationServer", mr.address, " error: ", e)
 	}
 	mr.l = l
 
