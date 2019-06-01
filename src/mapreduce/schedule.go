@@ -61,33 +61,44 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	wg := sync.WaitGroup{}
 	wg.Add(nTasks)
 
-	for i := 0; i < nTasks; i++ {
+	tl := make(chan int)
 
-		var file string
-		switch phase {
-		case mapPhase: file = mapFiles[i]
-		case reducePhase: file = ""
+	go func() {
+		for t := 0; t < nTasks; t++ {
+			tl <- t
 		}
+	}()
 
-		doTaskArgs := DoTaskArgs{
-			JobName: jobName,
-			File: file,
-			Phase: phase,
-			TaskNumber: i,
-			NumOtherPhase: nOther}
+	go func() {
+		for {
+			t := <- tl
 
-
-		go func() {
-			w := <- registerChan
-			ok := call(w, "Worker.DoTask", &doTaskArgs, nil)
-			if !ok {
-				fmt.Printf("Worker: RPC %s DoTask error\n", w)
-			} else {
-				wg.Done()
+			var file string
+			switch phase {
+			case mapPhase: file = mapFiles[t]
+			case reducePhase: file = ""
 			}
-			registerChan <- w
-		}()
-	}
+
+			doTaskArgs := DoTaskArgs{
+				JobName: jobName,
+				File: file,
+				Phase: phase,
+				TaskNumber: t,
+				NumOtherPhase: nOther}
+
+			go func() {
+				w := <- registerChan
+				ok := call(w, "Worker.DoTask", &doTaskArgs, nil)
+				if !ok {
+					fmt.Printf("Worker: RPC %s DoTask error\n", w)
+					tl <- t
+				} else {
+					wg.Done()
+				}
+				registerChan <- w
+			}()
+		}
+	}()
 
 	wg.Wait()
 
