@@ -12,24 +12,33 @@ type WorkerList struct {
 }
 
 func (wl *WorkerList) offer(w string) {
-	//wl.mu.Lock()
+	wl.mu.Lock()
 	wl.workers[w] = true
-	//wl.mu.Unlock()
+	wl.mu.Unlock()
 }
 
 func (wl *WorkerList) poll() string {
 	for {
-		//wl.mu.Lock()
 		for k, v := range wl.workers {
 			if v {
 				wl.workers[k] = false
 				return k
 			}
 		}
-		//wl.mu.Unlock()
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+//type TaskList struct {
+//	mu sync.Mutex
+//	tasks map[int]bool
+//}
+//
+//func (tl *TaskList) offer(t int) {
+//	tl.mu.Lock()
+//	tl.tasks[i] = true
+//	tl.mu.Unlock()
+//}
 
 //
 // schedule() starts and waits for all tasks in the given phase (mapPhase
