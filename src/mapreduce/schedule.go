@@ -70,6 +70,10 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	}()
 
 	go func() {
+		// put the following loop in a goroutine for the reason that
+		// `t := <- tl` may block when no more task in `tl`, thus
+		// it should be killed by someone (here it will be killed
+		// when the main goroutine exits)
 		for {
 			t := <- tl
 
