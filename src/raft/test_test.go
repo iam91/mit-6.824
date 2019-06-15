@@ -8,8 +8,11 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
+import (
+	"fmt"
+	"labrpc"
+	"testing"
+)
 import "time"
 import "math/rand"
 import "sync/atomic"
@@ -18,6 +21,19 @@ import "sync"
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
+
+func TestStatesTransition2D(t *testing.T) {
+	peers := make([]*labrpc.ClientEnd, 1)
+	i := 0
+	persister := Persister{}
+	applyCh := make(chan ApplyMsg, 1)
+
+	rf := Make(peers, i, &persister, applyCh)
+
+	rf.roleChan <- Role_Leader
+	rf.roleChan <- Role_Candidate
+	rf.roleChan <- Role_Follower
+}
 
 func TestInitialElection2A(t *testing.T) {
 	servers := 3
@@ -31,7 +47,7 @@ func TestInitialElection2A(t *testing.T) {
 
 	// sleep a bit to avoid racing with followers learning of the
 	// election, then check that all peers agree on the term.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 	term1 := cfg.checkTerms()
 
 	// does the leader+term stay the same if there is no network failure?
@@ -57,26 +73,31 @@ func TestReElection2A(t *testing.T) {
 	leader1 := cfg.checkOneLeader()
 
 	// if the leader disconnects, a new one should be elected.
+	fmt.Println("if the leader disconnects, a new one should be elected.")
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader.
+	fmt.Println("if the old leader rejoins, that shouldn't disturb the new leader.")
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
 
 	// if there's no quorum, no leader should
 	// be elected.
+	fmt.Println("if there's no quorum, no leader should be elected.")
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
 
 	// if a quorum arises, it should elect a leader.
+	fmt.Println("if a quorum arises, it should elect a leader.")
 	cfg.connect((leader2 + 1) % servers)
 	cfg.checkOneLeader()
 
 	// re-join of last node shouldn't prevent leader from existing.
+	fmt.Println("re-join of last node shouldn't prevent leader from existing.")
 	cfg.connect(leader2)
 	cfg.checkOneLeader()
 

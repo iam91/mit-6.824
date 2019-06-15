@@ -333,6 +333,13 @@ func (cfg *config) checkTerms() int {
 	for i := 0; i < cfg.n; i++ {
 		if cfg.connected[i] {
 			xterm, _ := cfg.rafts[i].GetState()
+			fmt.Printf(">>>>> checkTerms: server %d, %d\n", i, xterm)
+		}
+	}
+
+	for i := 0; i < cfg.n; i++ {
+		if cfg.connected[i] {
+			xterm, _ := cfg.rafts[i].GetState()
 			if term == -1 {
 				term = xterm
 			} else if term != xterm {
