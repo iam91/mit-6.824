@@ -47,7 +47,7 @@ func TestInitialElection2A(t *testing.T) {
 
 	// sleep a bit to avoid racing with followers learning of the
 	// election, then check that all peers agree on the term.
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	term1 := cfg.checkTerms()
 
 	// does the leader+term stay the same if there is no network failure?

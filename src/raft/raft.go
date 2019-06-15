@@ -1,5 +1,4 @@
 package raft
-//todo term check on RPC returning
 //
 // this is an outline of the API that raft must expose to
 // the service (or tester). see comments below for
@@ -28,6 +27,8 @@ import "labrpc"
 // import "bytes"
 // import "labgob"
 
+const DEBUG = false
+
 const Role_Dead			= 0
 const Role_Leader 		= 1
 const Role_Follower 	= 2
@@ -35,8 +36,8 @@ const Role_Candidate 	= 3
 
 const Const_Init_Term 				= 0
 const Const_Voted_Null 				= -1
-const Const_Min_Election_Timeout 	= 300
-const Const_Max_Election_Timeout 	= 600
+const Const_Min_Election_Timeout 	= 600
+const Const_Max_Election_Timeout 	= 900
 const Const_Heartbeat 				= 150
 
 //
@@ -87,9 +88,8 @@ type Raft struct {
 	heartbeatTimer	*time.Timer
 
 	roleChan		chan int
-	roleSwitchChan	chan int
+	syncTermChan	chan int
 	votesChan		chan int
-	shutdownChan	chan bool
 	resetTimerChan	chan bool
 
 	votes			int
@@ -162,7 +162,7 @@ func (rf *Raft) syncTerm(term int) bool {
 		rf.currentTerm = term
 		rf.votedFor = Const_Voted_Null
 		if rf.role != Role_Follower {
-			rf.roleSwitchChan <- Role_Follower
+			rf.syncTermChan <- Role_Follower
 		}
 	}
 	return delay
@@ -193,7 +193,9 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 	}
 	if args.Entries == nil {
 		rf.resetTimerChan <- true
-		fmt.Printf(">>>>> server %d(%d) get heartbeats from %d(%d)\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+		if DEBUG {
+			fmt.Printf(">>>>> server %d(%d) get heartbeats from %d(%d)\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+		}
 	}
 	rf.syncTerm(args.Term)
 }
@@ -311,7 +313,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
-	rf.shutdownChan <- true
 	rf.roleChan <- Role_Dead
 }
 
@@ -330,8 +331,7 @@ func (rf *Raft) resetTimer() bool {
 func (rf *Raft) drainChannels() {
 	for {
 		select {
-		case <- rf.shutdownChan:
-		case <- rf.roleSwitchChan:
+		case <- rf.syncTermChan:
 		case <- rf.resetTimerChan:
 		case <- rf.votesChan:
 		default:
@@ -342,10 +342,9 @@ func (rf *Raft) drainChannels() {
 
 func (rf *Raft) initChannels() {
 	rf.roleChan = make(chan int, 1)
-	rf.roleSwitchChan = make(chan int, 1)
+	rf.syncTermChan = make(chan int, 1)
 	rf.resetTimerChan = make(chan bool, 1)
 	rf.votesChan = make(chan int, len(rf.peers))
-	rf.shutdownChan = make(chan bool, 1)
 }
 
 func (rf *Raft) startFollower() {
@@ -354,25 +353,20 @@ func (rf *Raft) startFollower() {
 
 	for {
 		select {
-		case <- rf.shutdownChan:
-			rf.timer.Stop()
-			break
+		case <- rf.resetTimerChan:
+			rf.resetTimer()
 		default:
 			select {
 			case <- rf.resetTimerChan:
 				rf.resetTimer()
-			default:
-				select {
-				case <- rf.timer.C:
-					rf.votedFor = Const_Voted_Null
-					rf.roleChan <- Role_Candidate
-					break
-				}
+			case <- rf.timer.C:
+				rf.votedFor = Const_Voted_Null
+				rf.roleChan <- Role_Candidate
+				rf.drainChannels()
+				return
 			}
 		}
 	}
-
-	rf.drainChannels()
 }
 
 func (rf *Raft) broadcastRequestVotes() {
@@ -402,6 +396,9 @@ func (rf *Raft) broadcastRequestVotes() {
 }
 
 func (rf *Raft) startElection() {
+	if DEBUG {
+		fmt.Printf(">>>> Server %d start election at term %d\n", rf.me, rf.currentTerm)
+	}
 	rf.currentTerm++
 	rf.votes = 1
 	rf.timer = time.NewTimer(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
@@ -415,44 +412,67 @@ func (rf *Raft) startCandidate() {
 
 	for {
 		select {
-		case <- rf.shutdownChan:
+		case <-rf.resetTimerChan:
 			rf.timer.Stop()
-			break
+			rf.roleChan <- Role_Follower
+			rf.drainChannels()
+			return
+		case <-rf.syncTermChan:
+			rf.timer.Stop()
+			rf.roleChan <- Role_Follower
+			rf.drainChannels()
+			return
 		default:
 			select {
-			case <- rf.resetTimerChan:
+			case <-rf.resetTimerChan:
 				rf.timer.Stop()
 				rf.roleChan <- Role_Follower
-				break
+				rf.drainChannels()
+				return
+			case <-rf.syncTermChan:
+				rf.timer.Stop()
+				rf.roleChan <- Role_Follower
+				rf.drainChannels()
+				return
+			case <-rf.votesChan:
+				if rf.votes >= len(rf.peers)/2 {
+					rf.timer.Stop()
+					rf.roleChan <- Role_Leader
+					rf.drainChannels()
+					return
+				} else {
+					rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+					rf.startElection()
+				}
 			default:
 				select {
-				case role := <-rf.roleSwitchChan:
+				case <-rf.resetTimerChan:
 					rf.timer.Stop()
-					rf.roleChan <- role
-				default:
-					select {
-					case <- rf.votesChan:
-						if rf.votes >= len(rf.peers) / 2 {
-							rf.timer.Stop()
-							rf.roleChan <- Role_Leader
-							break
-						} else {
-							rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
-							rf.startElection()
-						}
-					default:
-						select {
-						case <- rf.timer.C:
-							rf.resetTimer()
-							rf.startElection()
-						}
+					rf.roleChan <- Role_Follower
+					rf.drainChannels()
+					return
+				case <-rf.syncTermChan:
+					rf.timer.Stop()
+					rf.roleChan <- Role_Follower
+					rf.drainChannels()
+					return
+				case <-rf.votesChan:
+					if rf.votes >= len(rf.peers)/2 {
+						rf.timer.Stop()
+						rf.roleChan <- Role_Leader
+						rf.drainChannels()
+						return
+					} else {
+						rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+						rf.startElection()
 					}
+				case <-rf.timer.C:
+					rf.resetTimer()
+					rf.startElection()
 				}
 			}
 		}
 	}
-
-	rf.drainChannels()
 }
 
 func (rf *Raft) broadcastHeartbeats() {
@@ -466,7 +486,7 @@ func (rf *Raft) broadcastHeartbeats() {
 
 				ok := false
 				for !ok {
-					ok = rf.sendAppendEntries(i, &args, &reply)
+					ok = rf.sendAppendEntries(peer, &args, &reply)
 					rf.syncTerm(reply.Term)
 				}
 
@@ -477,30 +497,30 @@ func (rf *Raft) broadcastHeartbeats() {
 
 func (rf *Raft) startLeader() {
 	//fmt.Printf(">>> Server %d in role : leader\n", rf.me)
+	rf.broadcastHeartbeats()
 	rf.heartbeatTimer = time.NewTimer(time.Duration(int64(Const_Heartbeat)) * time.Millisecond)
 
 	for {
+
 		select {
-		case <- rf.shutdownChan:
+		case role := <- rf.syncTermChan:
 			rf.heartbeatTimer.Stop()
-			break
+			rf.roleChan <- role
+			rf.drainChannels()
+			return
 		default:
 			select {
+			case role := <- rf.syncTermChan:
+				rf.heartbeatTimer.Stop()
+				rf.roleChan <- role
+				rf.drainChannels()
+				return
 			case <- rf.heartbeatTimer.C:
 				rf.broadcastHeartbeats()
-				rf.timer.Reset(time.Duration(int64(Const_Heartbeat)) * time.Millisecond)
-			default:
-				select {
-				case role := <- rf.roleSwitchChan:
-					rf.heartbeatTimer.Stop()
-					rf.roleChan <- role
-					break
-				}
+				rf.heartbeatTimer.Reset(time.Duration(int64(Const_Heartbeat)) * time.Millisecond)
 			}
 		}
 	}
-
-	rf.drainChannels()
 }
 
 //
@@ -531,7 +551,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go func() {
 		for {
 			role := <- rf.roleChan
-			fmt.Printf(">>> Server %d switch role to: %d\n", me, role)
+			if DEBUG {
+				fmt.Printf(">>> Server %d switch role to: %d\n", me, role)
+			}
 			switch rf.role = role; rf.role {
 			case Role_Leader:
 				go rf.startLeader()
