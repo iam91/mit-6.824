@@ -323,16 +323,16 @@ func (rf *Raft) switchRole(newRole int) {
 	rf.drainChannels()
 }
 
-func (rf *Raft) newTimer(val int64) *time.Timer {
-	return time.NewTimer(time.Duration(val) * time.Millisecond)
+func (rf *Raft) newTimer(timeout int64) *time.Timer {
+	return time.NewTimer(time.Duration(timeout) * time.Millisecond)
 }
 
-func (rf *Raft) startTimer(val int64) {
-	rf.timer = rf.newTimer(val)
+func (rf *Raft) startTimer(timeout int64) {
+	rf.timer = rf.newTimer(timeout)
 }
 
-func (rf *Raft) resetTimer(val int64) bool {
-	return rf.timer.Reset(time.Duration(val) * time.Millisecond)
+func (rf *Raft) resetTimer(timeout int64) bool {
+	return rf.timer.Reset(time.Duration(timeout) * time.Millisecond)
 }
 
 func (rf *Raft) drainChannels() {
@@ -362,15 +362,10 @@ func (rf *Raft) startFollower() {
 		select {
 		case <- rf.resetTimerChan:
 			rf.resetTimer(rf.ElectionTimeout())
-		default:
-			select {
-			case <- rf.resetTimerChan:
-				rf.resetTimer(rf.ElectionTimeout())
-			case <- rf.timer.C:
-				rf.votedFor = Const_Voted_Null
-				rf.switchRole(Role_Candidate)
-				return
-			}
+		case <- rf.timer.C:
+			rf.votedFor = Const_Voted_Null
+			rf.switchRole(Role_Candidate)
+			return
 		}
 	}
 }
@@ -423,42 +418,16 @@ func (rf *Raft) startCandidate() {
 		case <-rf.syncTermChan:
 			rf.switchRole(Role_Follower)
 			return
-		default:
-			select {
-			case <-rf.resetTimerChan:
-				rf.switchRole(Role_Follower)
+		case <-rf.votesChan:
+			if rf.votes >= len(rf.peers) / 2 {
+				rf.switchRole(Role_Leader)
 				return
-			case <-rf.syncTermChan:
-				rf.switchRole(Role_Follower)
-				return
-			case <-rf.votesChan:
-				if rf.votes >= len(rf.peers) / 2 {
-					rf.switchRole(Role_Leader)
-					return
-				} else {
-					rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
-					rf.startElection()
-				}
-			default:
-				select {
-				case <-rf.resetTimerChan:
-					rf.switchRole(Role_Follower)
-					return
-				case <-rf.syncTermChan:
-					rf.switchRole(Role_Follower)
-					return
-				case <-rf.votesChan:
-					if rf.votes >= len(rf.peers) / 2 {
-						rf.switchRole(Role_Leader)
-						return
-					} else {
-						rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
-						rf.startElection()
-					}
-				case <-rf.timer.C:
-					rf.startElection()
-				}
+			} else {
+				rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+				rf.startElection()
 			}
+		case <-rf.timer.C:
+			rf.startElection()
 		}
 	}
 }
@@ -489,20 +458,13 @@ func (rf *Raft) startLeader() {
 	rf.timer = rf.newTimer(Const_Heartbeat)
 
 	for {
-
 		select {
-		case  <- rf.syncTermChan:
+		case <- rf.syncTermChan:
 			rf.switchRole(Role_Follower)
 			return
-		default:
-			select {
-			case <- rf.syncTermChan:
-				rf.switchRole(Role_Follower)
-				return
-			case <- rf.timer.C:
-				rf.broadcastHeartbeats()
-				rf.resetTimer(Const_Heartbeat)
-			}
+		case <- rf.timer.C:
+			rf.broadcastHeartbeats()
+			rf.resetTimer(Const_Heartbeat)
 		}
 	}
 }
