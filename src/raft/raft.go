@@ -316,6 +316,14 @@ func (rf *Raft) Kill() {
 	rf.roleChan <- Role_Dead
 }
 
+func (rf *Raft) switchRole(newRole int) {
+	if rf.timer != nil {
+		rf.timer.Stop()
+	}
+	rf.roleChan <- newRole
+	rf.drainChannels()
+}
+
 func (rf *Raft) newTimer() *time.Timer {
 	return time.NewTimer(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
 }
@@ -361,8 +369,7 @@ func (rf *Raft) startFollower() {
 				rf.resetTimer()
 			case <- rf.timer.C:
 				rf.votedFor = Const_Voted_Null
-				rf.roleChan <- Role_Candidate
-				rf.drainChannels()
+				rf.switchRole(Role_Candidate)
 				return
 			}
 		}
@@ -399,6 +406,7 @@ func (rf *Raft) startElection() {
 	if DEBUG {
 		fmt.Printf(">>>> Server %d start election at term %d\n", rf.me, rf.currentTerm)
 	}
+	rf.resetTimer()
 	rf.currentTerm++
 	rf.votes = 1
 	rf.timer = time.NewTimer(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
@@ -407,38 +415,27 @@ func (rf *Raft) startElection() {
 
 func (rf *Raft) startCandidate() {
 	//fmt.Printf(">>> Server %d in role : candidate\n", rf.me)
-	rf.startTimer()
 	rf.startElection()
 
 	for {
 		select {
 		case <-rf.resetTimerChan:
-			rf.timer.Stop()
-			rf.roleChan <- Role_Follower
-			rf.drainChannels()
+			rf.switchRole(Role_Follower)
 			return
 		case <-rf.syncTermChan:
-			rf.timer.Stop()
-			rf.roleChan <- Role_Follower
-			rf.drainChannels()
+			rf.switchRole(Role_Follower)
 			return
 		default:
 			select {
 			case <-rf.resetTimerChan:
-				rf.timer.Stop()
-				rf.roleChan <- Role_Follower
-				rf.drainChannels()
+				rf.switchRole(Role_Follower)
 				return
 			case <-rf.syncTermChan:
-				rf.timer.Stop()
-				rf.roleChan <- Role_Follower
-				rf.drainChannels()
+				rf.switchRole(Role_Follower)
 				return
 			case <-rf.votesChan:
-				if rf.votes >= len(rf.peers)/2 {
-					rf.timer.Stop()
-					rf.roleChan <- Role_Leader
-					rf.drainChannels()
+				if rf.votes >= len(rf.peers) / 2 {
+					rf.switchRole(Role_Leader)
 					return
 				} else {
 					rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
@@ -447,27 +444,20 @@ func (rf *Raft) startCandidate() {
 			default:
 				select {
 				case <-rf.resetTimerChan:
-					rf.timer.Stop()
-					rf.roleChan <- Role_Follower
-					rf.drainChannels()
+					rf.switchRole(Role_Follower)
 					return
 				case <-rf.syncTermChan:
-					rf.timer.Stop()
-					rf.roleChan <- Role_Follower
-					rf.drainChannels()
+					rf.switchRole(Role_Follower)
 					return
 				case <-rf.votesChan:
-					if rf.votes >= len(rf.peers)/2 {
-						rf.timer.Stop()
-						rf.roleChan <- Role_Leader
-						rf.drainChannels()
+					if rf.votes >= len(rf.peers) / 2 {
+						rf.switchRole(Role_Leader)
 						return
 					} else {
 						rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
 						rf.startElection()
 					}
 				case <-rf.timer.C:
-					rf.resetTimer()
 					rf.startElection()
 				}
 			}
