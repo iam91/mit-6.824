@@ -85,7 +85,6 @@ type Raft struct {
 
 	role 			int
 	timer 			*time.Timer
-	heartbeatTimer	*time.Timer
 
 	roleChan		chan int
 	syncTermChan	chan int
@@ -324,16 +323,16 @@ func (rf *Raft) switchRole(newRole int) {
 	rf.drainChannels()
 }
 
-func (rf *Raft) newTimer() *time.Timer {
-	return time.NewTimer(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+func (rf *Raft) newTimer(val int64) *time.Timer {
+	return time.NewTimer(time.Duration(val) * time.Millisecond)
 }
 
-func (rf *Raft) startTimer() {
-	rf.timer = rf.newTimer()
+func (rf *Raft) startTimer(val int64) {
+	rf.timer = rf.newTimer(val)
 }
 
-func (rf *Raft) resetTimer() bool {
-	return rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+func (rf *Raft) resetTimer(val int64) bool {
+	return rf.timer.Reset(time.Duration(val) * time.Millisecond)
 }
 
 func (rf *Raft) drainChannels() {
@@ -357,16 +356,16 @@ func (rf *Raft) initChannels() {
 
 func (rf *Raft) startFollower() {
 	//fmt.Printf(">>> Server %d in role : follower\n", rf.me)
-	rf.startTimer()
+	rf.startTimer(rf.ElectionTimeout())
 
 	for {
 		select {
 		case <- rf.resetTimerChan:
-			rf.resetTimer()
+			rf.resetTimer(rf.ElectionTimeout())
 		default:
 			select {
 			case <- rf.resetTimerChan:
-				rf.resetTimer()
+				rf.resetTimer(rf.ElectionTimeout())
 			case <- rf.timer.C:
 				rf.votedFor = Const_Voted_Null
 				rf.switchRole(Role_Candidate)
@@ -406,10 +405,9 @@ func (rf *Raft) startElection() {
 	if DEBUG {
 		fmt.Printf(">>>> Server %d start election at term %d\n", rf.me, rf.currentTerm)
 	}
-	rf.resetTimer()
+	rf.resetTimer(rf.ElectionTimeout())
 	rf.currentTerm++
 	rf.votes = 1
-	rf.timer = time.NewTimer(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
 	rf.broadcastRequestVotes()
 }
 
@@ -488,26 +486,22 @@ func (rf *Raft) broadcastHeartbeats() {
 func (rf *Raft) startLeader() {
 	//fmt.Printf(">>> Server %d in role : leader\n", rf.me)
 	rf.broadcastHeartbeats()
-	rf.heartbeatTimer = time.NewTimer(time.Duration(int64(Const_Heartbeat)) * time.Millisecond)
+	rf.timer = rf.newTimer(Const_Heartbeat)
 
 	for {
 
 		select {
-		case role := <- rf.syncTermChan:
-			rf.heartbeatTimer.Stop()
-			rf.roleChan <- role
-			rf.drainChannels()
+		case  <- rf.syncTermChan:
+			rf.switchRole(Role_Follower)
 			return
 		default:
 			select {
-			case role := <- rf.syncTermChan:
-				rf.heartbeatTimer.Stop()
-				rf.roleChan <- role
-				rf.drainChannels()
+			case <- rf.syncTermChan:
+				rf.switchRole(Role_Follower)
 				return
-			case <- rf.heartbeatTimer.C:
+			case <- rf.timer.C:
 				rf.broadcastHeartbeats()
-				rf.heartbeatTimer.Reset(time.Duration(int64(Const_Heartbeat)) * time.Millisecond)
+				rf.resetTimer(Const_Heartbeat)
 			}
 		}
 	}
