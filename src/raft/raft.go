@@ -234,6 +234,7 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 		rf.log = append(rf.log, args.Entries...)
 		if args.LeaderCommit > rf.commitIndex {
 			rf.commitIndex = rf.IntMin(args.LeaderCommit, rf.commitIndex + newEntriesCount)
+			rf.applyCommand()
 		}
 	}
 	rf.syncTerm(args.Term)
@@ -374,8 +375,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term: rf.currentTerm,
 			LogIndex: len(rf.log),
 			Command: command}
-		entries := []LogEntry{entry}
-		rf.log = append(rf.log, entries...)
+		rf.log = append(rf.log, entry)
 
 		// issue AppendEntries RPC
 		for i := range rf.peers {
@@ -416,19 +416,50 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 
 		// apply command to states machine when logs are replicated enough
-		replicatedCnt := 0
-		leastN := rf.commitIndex
+		lowerN := rf.commitIndex + 1
+		upperN := -1
+		cnt := 0
 		for {
 			select {
 			case peer := <- rf.commitCheckChan:
-				replicatedCnt++
-				// todo : majority check whether to commit
-				// todo : apply to state machine logic
+				// majority check whether to commit
+				matchIndex := rf.matchIndex[peer]
+				if matchIndex >= lowerN {
+					if rf.log[matchIndex].Term == rf.currentTerm {
+						cnt++
+						if upperN < 0 {
+							upperN = rf.matchIndex[peer]
+						} else {
+							if matchIndex < upperN {
+								upperN = matchIndex
+							}
+						}
+					}
+				}
+				if cnt >= len(rf.peers) / 2 && upperN >= lowerN{
+					rf.commitIndex = upperN
+					rf.applyCommand()
+					if cnt >= len(rf.peers) {
+						break
+					}
+				}
+
 			}
 		}
 	}
 
 	return index, term, isLeader
+}
+
+func (rf *Raft) applyCommand() {
+	for rf.commitIndex > rf.lastApplied {
+		rf.lastApplied++
+		msg := ApplyMsg{
+			CommandValid: true,
+			Command: rf.log[rf.lastApplied].Command,
+			CommandIndex: rf.lastApplied}
+		rf.applyCh <- msg
+	}
 }
 
 //
@@ -610,8 +641,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = Const_Voted_Null
 	rf.log = make([]LogEntry, 0)
 
-	rf.commitIndex = 0
-	rf.lastApplied = 0
+	rf.commitIndex = -1
+	rf.lastApplied = -1
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 
