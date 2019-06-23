@@ -27,7 +27,7 @@ import "labrpc"
 // import "bytes"
 // import "labgob"
 
-const DEBUG = false
+const DEBUG = true
 
 const Role_Dead			= 0
 const Role_Leader 		= 1
@@ -39,6 +39,26 @@ const Const_Voted_Null 				= -1
 const Const_Min_Election_Timeout 	= 600
 const Const_Max_Election_Timeout 	= 900
 const Const_Heartbeat 				= 150
+
+func NullLog() LogEntry {
+	logEntry := LogEntry{
+		Term: Const_Init_Term,
+		LogIndex: 0}
+	return logEntry
+}
+
+func IntMin(a int, b int ) int {
+	if a > b {
+		return b
+	} else {
+		return a
+	}
+}
+
+func ElectionTimeout() int64 {
+	span := Const_Max_Election_Timeout - Const_Min_Election_Timeout
+	return Const_Min_Election_Timeout + int64(rand.Float32() * float32(span))
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -63,7 +83,7 @@ type LogEntry struct {
 	Command 	interface{}
 }
 
-func (le *LogEntry) moreOrSameUpToDate(lastLogIndex int, lastLogTerm int) int {
+func (le *LogEntry) compareUpToDate(lastLogIndex int, lastLogTerm int) int {
 	if le.Term == lastLogTerm {
 		return le.LogIndex - lastLogIndex
 	} else {
@@ -108,19 +128,6 @@ type Raft struct {
 	votes			int
 }
 
-func (rf *Raft) IntMin(a int, b int ) int {
-	if a > b {
-		return b
-	} else {
-		return a
-	}
-}
-
-func (rf *Raft) ElectionTimeout() int64 {
-	span := Const_Max_Election_Timeout - Const_Min_Election_Timeout
-	return Const_Min_Election_Timeout + int64(rand.Float32() * float32(span))
-}
-
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -152,7 +159,6 @@ func (rf *Raft) persist() {
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 }
-
 
 //
 // restore previously persisted state.
@@ -186,104 +192,6 @@ func (rf *Raft) syncTerm(term int) bool {
 		}
 	}
 	return delay
-}
-
-type AppendEntriesArgs struct {
-	Term			int
-	LeaderId		int
-	PrevLogIndex	int
-	PrevLogTerm		int
-	Entries 		[]LogEntry
-	LeaderCommit	int
-}
-
-type AppendEntriesReply struct {
-	Term 	int
-	Success	bool
-}
-
-func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesReply) {
-	reply.Term = rf.currentTerm
-	reply.Success = true
-
-	if args.Term < rf.currentTerm {
-		reply.Success = false
-		return
-	}
-	if len(rf.log) <= args.PrevLogIndex {
-		reply.Success = false
-		rf.syncTerm(args.Term)
-		return
-	} else {
-		if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-			// force follower to be consistent with leader
-			rf.log = rf.log[:args.PrevLogIndex]
-			reply.Success = false
-			rf.syncTerm(args.Term)
-			return
-		}
-	}
-
-	if args.Entries == nil || len(args.Entries) == 0{
-		rf.resetTimerChan <- true
-		if DEBUG {
-			fmt.Printf(">>>>> server %d(%d) get heartbeats from %d(%d)\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
-		}
-	} else {
-		newEntriesCount := len(args.Entries)
-		rf.log = append(rf.log, args.Entries...)
-		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = rf.IntMin(args.LeaderCommit, rf.commitIndex + newEntriesCount)
-			rf.applyCommand()
-		}
-	}
-	rf.syncTerm(args.Term)
-}
-
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term			int
-	CandidateId		int
-	LastLogIndex	int
-	LastLogTerm		int
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term		int
-	VoteGranted	bool
-}
-
-//
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-	reply.Term = rf.currentTerm
-
-	if args.Term < rf.currentTerm {
-		reply.VoteGranted = false
-		return
-	}
-
-	lastLogEntry := rf.log[len(rf.log) - 1]
-	logUpToDate := lastLogEntry.moreOrSameUpToDate(args.LastLogIndex, args.LastLogTerm) <= 0
-
-	if (rf.votedFor == Const_Voted_Null || rf.votedFor == args.CandidateId) && logUpToDate {
-		rf.votedFor = args.CandidateId
-		reply.VoteGranted = true
-	} else {
-		reply.VoteGranted = false
-	}
-	rf.syncTerm(args.Term)
 }
 
 //
@@ -515,16 +423,21 @@ func (rf *Raft) initChannels() {
 
 func (rf *Raft) startFollower() {
 	//fmt.Printf(">>> Server %d in role : follower\n", rf.me)
-	rf.startTimer(rf.ElectionTimeout())
+	rf.startTimer(ElectionTimeout())
 
 	for {
 		select {
 		case <- rf.resetTimerChan:
-			rf.resetTimer(rf.ElectionTimeout())
-		case <- rf.timer.C:
-			rf.votedFor = Const_Voted_Null
-			rf.switchRole(Role_Candidate)
-			return
+			rf.resetTimer(ElectionTimeout())
+		default:
+			select {
+			case <- rf.resetTimerChan:
+				rf.resetTimer(ElectionTimeout())
+			case <- rf.timer.C:
+				rf.votedFor = Const_Voted_Null
+				rf.switchRole(Role_Candidate)
+				return
+			}
 		}
 	}
 }
@@ -556,17 +469,17 @@ func (rf *Raft) broadcastRequestVotes() {
 }
 
 func (rf *Raft) startElection() {
-	if DEBUG {
-		fmt.Printf(">>>> Server %d start election at term %d\n", rf.me, rf.currentTerm)
-	}
-	rf.resetTimer(rf.ElectionTimeout())
 	rf.currentTerm++
 	rf.votes = 1
 	rf.broadcastRequestVotes()
+	if DEBUG {
+		fmt.Printf(">>>> Server %d start election at term %d\n", rf.me, rf.currentTerm)
+	}
 }
 
 func (rf *Raft) startCandidate() {
 	//fmt.Printf(">>> Server %d in role : candidate\n", rf.me)
+	rf.startTimer(ElectionTimeout())
 	rf.startElection()
 
 	for {
@@ -582,10 +495,11 @@ func (rf *Raft) startCandidate() {
 				rf.switchRole(Role_Leader)
 				return
 			} else {
-				rf.timer.Reset(time.Duration(rf.ElectionTimeout()) * time.Millisecond)
+				rf.timer.Reset(time.Duration(ElectionTimeout()) * time.Millisecond)
 				rf.startElection()
 			}
 		case <-rf.timer.C:
+			rf.resetTimer(ElectionTimeout())
 			rf.startElection()
 		}
 	}
@@ -639,10 +553,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.currentTerm = Const_Init_Term
 	rf.votedFor = Const_Voted_Null
-	rf.log = make([]LogEntry, 0)
+	rf.log = []LogEntry{NullLog()}
 
-	rf.commitIndex = -1
-	rf.lastApplied = -1
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 
@@ -671,3 +585,4 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	return rf
 }
+

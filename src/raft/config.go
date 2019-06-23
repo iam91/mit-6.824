@@ -330,12 +330,12 @@ func (cfg *config) checkOneLeader() int {
 // check that everyone agrees on the term.
 func (cfg *config) checkTerms() int {
 	term := -1
-	for i := 0; i < cfg.n; i++ {
-		if cfg.connected[i] {
-			xterm, _ := cfg.rafts[i].GetState()
-			fmt.Printf(">>>>> checkTerms: server %d, %d\n", i, xterm)
-		}
-	}
+	//for i := 0; i < cfg.n; i++ {
+	//	if cfg.connected[i] {
+	//		xterm, _ := cfg.rafts[i].GetState()
+	//		fmt.Printf(">>>>> checkTerms: server %d, %d\n", i, xterm)
+	//	}
+	//}
 
 	for i := 0; i < cfg.n; i++ {
 		if cfg.connected[i] {
