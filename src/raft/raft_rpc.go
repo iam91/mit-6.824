@@ -1,6 +1,5 @@
 package raft
 
-
 type AppendEntriesArgs struct {
 	Term			int
 	LeaderId		int
@@ -39,16 +38,12 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 	reply.Success = true
 	if args.Entries == nil || len(args.Entries) == 0 {
 		rf.resetTimerChan <- true
-		if DEBUG {
-			// fmt.Printf(">>>>> server %d(%d) get heartbeats from %d(%d)\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
-		}
 	} else {
-		newEntriesCount := len(args.Entries)
 		rf.log = append(rf.log, args.Entries...)
-		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = IntMin(args.LeaderCommit, rf.commitIndex + newEntriesCount)
-			rf.applyCommand()
-		}
+	}
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = IntMin(args.LeaderCommit, len(rf.log) - 1)
+		rf.applyCommand()
 	}
 	rf.syncTerm(args.Term)
 }

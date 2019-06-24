@@ -279,9 +279,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 	if isLeader {
+		index = len(rf.log)
+		term = rf.currentTerm
+
 		entry := LogEntry{
-			Term: rf.currentTerm,
-			LogIndex: len(rf.log),
+			Term: term,
+			LogIndex: index,
 			Command: command}
 		rf.log = append(rf.log, entry)
 
@@ -289,11 +292,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		for i := range rf.peers {
 			if i != rf.me {
 				go func(peer int) {
-					matched := false
+					notMatched := true
 					prevIndex := rf.nextIndex[peer] - 1
 
 					if len(rf.log) - 1 >= rf.nextIndex[peer] {
-						for matched {
+						for notMatched {
 							args := AppendEntriesArgs{
 								Term:         rf.currentTerm,
 								LeaderId:     rf.me,
@@ -311,13 +314,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 							if !reply.Success {
 								prevIndex--
 							} else {
-								matched = true
-								rf.nextIndex[peer] = prevIndex + 1
-								rf.matchIndex[peer] = prevIndex
+								notMatched = false
+								//fmt.Printf("<><><><><> %d: %d\n", peer, prevIndex)
+								rf.nextIndex[peer] = prevIndex + 2
+								rf.matchIndex[peer] = prevIndex + 1
 								rf.commitCheckChan <- peer
 							}
 						}
-
 					}
 				}(i)
 			}
@@ -327,12 +330,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		lowerN := rf.commitIndex + 1
 		upperN := -1
 		cnt := 0
-		for {
+		run := true
+		for run {
 			select {
 			case peer := <- rf.commitCheckChan:
 				// majority check whether to commit
 				matchIndex := rf.matchIndex[peer]
+				//fmt.Printf("[[[[[[[[[ %d: %d, %d\n", peer, matchIndex, lowerN)
 				if matchIndex >= lowerN {
+					//fmt.Printf(">>>>>>>>>>> %d, %d, %d\n", peer, rf.log[matchIndex].Term, rf.currentTerm)
 					if rf.log[matchIndex].Term == rf.currentTerm {
 						cnt++
 						if upperN < 0 {
@@ -345,10 +351,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					}
 				}
 				if cnt >= len(rf.peers) / 2 && upperN >= lowerN{
+					//fmt.Printf("<<<<<<<<<< %d: %d，%d\n", peer, upperN, cnt)
 					rf.commitIndex = upperN
+					//fmt.Printf(">>>>> %d\n", rf.log[rf.commitIndex])
 					rf.applyCommand()
-					if cnt >= len(rf.peers) {
-						break
+					if cnt >= len(rf.peers) - 1 {
+						run = false
 					}
 				}
 
@@ -360,6 +368,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 func (rf *Raft) applyCommand() {
+	fmt.Printf("*********** %d %d %d\n", rf.me, rf.commitIndex, rf.lastApplied)
 	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied++
 		msg := ApplyMsg{
