@@ -1,4 +1,8 @@
 package raft
+
+// todo
+// follower网络被切断term增加，重新加入时出现问题
+
 //
 // this is an outline of the API that raft must expose to
 // the service (or tester). see comments below for
@@ -185,11 +189,7 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) syncTerm(term int) bool {
 	var delay = term > rf.currentTerm
 	if delay {
-		rf.currentTerm = term
-		rf.votedFor = Const_Voted_Null
-		if rf.role != Role_Follower {
-			rf.syncTermChan <- Role_Follower
-		}
+		rf.syncTermChan <- term
 	}
 	return delay
 }
@@ -233,30 +233,54 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) broadcastHeartbeats() {
+func (rf *Raft) broadcastAppendEntries() {
 	entries := make([]LogEntry, 0)
-	prevIndex := len(rf.log) - 1
+
+	args := AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		LeaderCommit: rf.commitIndex}
+
 	for i := range rf.peers {
 		if i != rf.me {
 			go func(peer int) {
-				args := AppendEntriesArgs{
-					Term:         rf.currentTerm,
-					LeaderId:     rf.me,
-					LeaderCommit: rf.commitIndex,
-					PrevLogIndex: prevIndex,
-					PrevLogTerm:  rf.log[prevIndex].Term,
-					Entries: entries}
-				reply := AppendEntriesReply{}
-				ok := false
-				for !ok {
-					ok = rf.sendAppendEntries(peer, &args, &reply)
-					rf.syncTerm(reply.Term)
+				prevIndex := rf.nextIndex[peer] - 1
+				if len(rf.log) - 1 >= rf.nextIndex[peer] {
+					entries = rf.log[rf.nextIndex[peer]:]
+				}
+
+				notMatched := true
+				for notMatched {
+					args.PrevLogIndex = prevIndex
+					args.PrevLogTerm = rf.log[prevIndex].Term
+					args.Entries = entries
+					reply := AppendEntriesReply{}
+
+					ok := false
+					for !ok {
+						ok = rf.sendAppendEntries(peer, &args, &reply)
+					}
+
+					if reply.Term <= args.Term { // todo: 此处逻辑需修改得更明晰
+						if !reply.Success {
+							prevIndex--
+						} else {
+							notMatched = false
+							if len(entries) > 0 {
+								rf.nextIndex[peer] = prevIndex + 2
+								rf.matchIndex[peer] = prevIndex + 1
+								rf.commitCheckChan <- peer
+							}
+						}
+					} else {
+						notMatched = false
+						rf.syncTerm(reply.Term)
+					}
 				}
 			}(i)
 		}
 	}
 }
-
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -277,98 +301,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := rf.role == Role_Leader
 
-	// Your code here (2B).
 	if isLeader {
 		index = len(rf.log)
 		term = rf.currentTerm
-
-		entry := LogEntry{
-			Term: term,
-			LogIndex: index,
-			Command: command}
-		rf.log = append(rf.log, entry)
-
-		// issue AppendEntries RPC
-		for i := range rf.peers {
-			if i != rf.me {
-				go func(peer int) {
-					notMatched := true
-					prevIndex := rf.nextIndex[peer] - 1
-
-					if len(rf.log) - 1 >= rf.nextIndex[peer] {
-						for notMatched {
-							args := AppendEntriesArgs{
-								Term:         rf.currentTerm,
-								LeaderId:     rf.me,
-								LeaderCommit: rf.commitIndex,
-								PrevLogIndex: prevIndex,
-								PrevLogTerm:  rf.log[prevIndex].Term,
-								Entries: rf.log[rf.nextIndex[peer]:]}
-							reply := AppendEntriesReply{}
-							ok := false
-							for !ok {
-								ok = rf.sendAppendEntries(peer, &args, &reply)
-								rf.syncTerm(reply.Term)
-							}
-							// check matching
-							if !reply.Success {
-								prevIndex--
-							} else {
-								notMatched = false
-								//fmt.Printf("<><><><><> %d: %d\n", peer, prevIndex)
-								rf.nextIndex[peer] = prevIndex + 2
-								rf.matchIndex[peer] = prevIndex + 1
-								rf.commitCheckChan <- peer
-							}
-						}
-					}
-				}(i)
-			}
-		}
-
-		// apply command to states machine when logs are replicated enough
-		lowerN := rf.commitIndex + 1
-		upperN := -1
-		cnt := 0
-		run := true
-		for run {
-			select {
-			case peer := <- rf.commitCheckChan:
-				// majority check whether to commit
-				matchIndex := rf.matchIndex[peer]
-				//fmt.Printf("[[[[[[[[[ %d: %d, %d\n", peer, matchIndex, lowerN)
-				if matchIndex >= lowerN {
-					//fmt.Printf(">>>>>>>>>>> %d, %d, %d\n", peer, rf.log[matchIndex].Term, rf.currentTerm)
-					if rf.log[matchIndex].Term == rf.currentTerm {
-						cnt++
-						if upperN < 0 {
-							upperN = rf.matchIndex[peer]
-						} else {
-							if matchIndex < upperN {
-								upperN = matchIndex
-							}
-						}
-					}
-				}
-				if cnt >= len(rf.peers) / 2 && upperN >= lowerN{
-					//fmt.Printf("<<<<<<<<<< %d: %d，%d\n", peer, upperN, cnt)
-					rf.commitIndex = upperN
-					//fmt.Printf(">>>>> %d\n", rf.log[rf.commitIndex])
-					rf.applyCommand()
-					if cnt >= len(rf.peers) - 1 {
-						run = false
-					}
-				}
-
-			}
-		}
+		rf.log = append(rf.log, LogEntry{term, index, command})
 	}
-
 	return index, term, isLeader
 }
 
 func (rf *Raft) applyCommand() {
-	fmt.Printf("*********** %d %d %d\n", rf.me, rf.commitIndex, rf.lastApplied)
+	//fmt.Printf(">>> server %d applyCommand: %d %d\n", rf.me, rf.commitIndex, rf.lastApplied)
 	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied++
 		msg := ApplyMsg{
@@ -446,31 +388,38 @@ func (rf *Raft) startFollower() {
 				rf.votedFor = Const_Voted_Null
 				rf.switchRole(Role_Candidate)
 				return
+			case term := <- rf.syncTermChan:
+				rf.currentTerm = term
+				rf.votedFor = Const_Voted_Null
 			}
 		}
 	}
 }
 
 func (rf *Raft) broadcastRequestVotes() {
+	args := RequestVoteArgs{
+		Term: rf.currentTerm,
+		CandidateId: rf.me}
+
 	for i := range rf.peers {
 		if i != rf.me {
 			go func(peer int) {
-				args := RequestVoteArgs{
-					Term: rf.currentTerm,
-					CandidateId: rf.me}
 				reply := RequestVoteReply{}
 
 				ok := false
 				for !ok {
 					ok = rf.sendRequestVote(peer, &args, &reply)
-					if !rf.syncTerm(reply.Term) {
-						if ok &&reply.VoteGranted {
-							rf.mu.Lock()
-							rf.votes++
-							rf.votesChan <- 1
-							rf.mu.Unlock()
-						}
+				}
+
+				if reply.Term <= args.Term { // todo: 此处逻辑应修改得更明晰
+					if ok &&reply.VoteGranted {
+						rf.mu.Lock()
+						rf.votes++
+						rf.votesChan <- 1
+						rf.mu.Unlock()
 					}
+				} else {
+					rf.syncTerm(reply.Term)
 				}
 			}(i)
 		}
@@ -479,6 +428,7 @@ func (rf *Raft) broadcastRequestVotes() {
 
 func (rf *Raft) startElection() {
 	rf.currentTerm++
+	rf.votedFor = rf.me
 	rf.votes = 1
 	rf.broadcastRequestVotes()
 	if DEBUG {
@@ -496,7 +446,9 @@ func (rf *Raft) startCandidate() {
 		case <-rf.resetTimerChan:
 			rf.switchRole(Role_Follower)
 			return
-		case <-rf.syncTermChan:
+		case term := <-rf.syncTermChan:
+			rf.currentTerm = term
+			rf.votedFor = Const_Voted_Null
 			rf.switchRole(Role_Follower)
 			return
 		case <-rf.votesChan:
@@ -505,7 +457,6 @@ func (rf *Raft) startCandidate() {
 				return
 			} else {
 				rf.timer.Reset(time.Duration(ElectionTimeout()) * time.Millisecond)
-				rf.startElection()
 			}
 		case <-rf.timer.C:
 			rf.resetTimer(ElectionTimeout())
@@ -522,18 +473,57 @@ func (rf *Raft) initIndices() {
 
 func (rf *Raft) startLeader() {
 	//fmt.Printf(">>> Server %d in role : leader\n", rf.me)
-	rf.broadcastHeartbeats()
-	rf.timer = rf.newTimer(Const_Heartbeat)
 	rf.initIndices()
+	rf.broadcastAppendEntries()
+	rf.timer = rf.newTimer(Const_Heartbeat)
+
+	lowerN := rf.commitIndex + 1
+	upperN := -1
+	cnt := 0
 
 	for {
 		select {
-		case <- rf.syncTermChan:
+		case peer := <- rf.commitCheckChan:
+			// majority check whether to commit
+			matchIndex := rf.matchIndex[peer]
+			//fmt.Printf("[[[[[[[[[ %d: %d, %d\n", peer, matchIndex, lowerN)
+			if matchIndex >= lowerN {
+				//fmt.Printf(">>>>>>>>>>> %d, %d, %d\n", peer, rf.log[matchIndex].Term, rf.currentTerm)
+				if rf.log[matchIndex].Term == rf.currentTerm {
+					cnt++
+					if upperN < 0 {
+						upperN = rf.matchIndex[peer]
+					} else {
+						if matchIndex < upperN {
+							upperN = matchIndex
+						}
+					}
+				}
+			}
+			if cnt >= len(rf.peers) / 2 && upperN >= lowerN{
+				rf.commitIndex = upperN
+				rf.applyCommand()
+			}
+			lowerN = rf.commitIndex + 1
+			upperN = -1
+			cnt = 0
+
+		case term := <- rf.syncTermChan:
+			rf.currentTerm = term
+			rf.votedFor = Const_Voted_Null
 			rf.switchRole(Role_Follower)
 			return
-		case <- rf.timer.C:
-			rf.broadcastHeartbeats()
-			rf.resetTimer(Const_Heartbeat)
+		default:
+			select {
+			case term := <- rf.syncTermChan:
+				rf.currentTerm = term
+				rf.votedFor = Const_Voted_Null
+				rf.switchRole(Role_Follower)
+				return
+			case <- rf.timer.C:
+				rf.broadcastAppendEntries()
+				rf.resetTimer(Const_Heartbeat)
+			}
 		}
 	}
 }

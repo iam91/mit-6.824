@@ -17,6 +17,8 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesReply) {
 	reply.Term = rf.currentTerm
 
+	//fmt.Printf("AppendEntries %d from %d, %d, %d\n", rf.me, args.LeaderId, args.Term, rf.currentTerm)
+
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		return
@@ -36,9 +38,8 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 	}
 
 	reply.Success = true
-	if args.Entries == nil || len(args.Entries) == 0 {
-		rf.resetTimerChan <- true
-	} else {
+	rf.resetTimerChan <- true
+	if args.Entries != nil && len(args.Entries) != 0 {
 		rf.log = append(rf.log, args.Entries...)
 	}
 	if args.LeaderCommit > rf.commitIndex {
@@ -77,13 +78,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	reply.Term = rf.currentTerm
 
+	//fmt.Printf("RequestVote %d from %d, %d, %d\n", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
 		return
 	}
 
 	rf.resetTimerChan <- true
-
 	lastLogEntry := rf.log[len(rf.log) - 1]
 	logUpToDate := lastLogEntry.compareUpToDate(args.LastLogIndex, args.LastLogTerm) <= 0
 
