@@ -1,6 +1,6 @@
 package raft
 
-// follower网络被切断term增加，重新加入时出现问题
+// todo: follower网络被切断term增加，重新加入时出现问题
 
 //
 // this is an outline of the API that raft must expose to
@@ -261,10 +261,7 @@ func (rf *Raft) applyCommand() {
 	//fmt.Printf(">>> server %d applyCommand: %d %d\n", rf.me, rf.commitIndex, rf.lastApplied)
 	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied++
-		msg := ApplyMsg{
-			CommandValid: true,
-			Command: rf.log[rf.lastApplied].Command,
-			CommandIndex: rf.lastApplied}
+		msg := ApplyMsg{true, rf.log[rf.lastApplied].Command, rf.lastApplied}
 		rf.applyCh <- msg
 	}
 }
@@ -336,13 +333,13 @@ func (rf *Raft) startFollower() {
 			case term := <- rf.syncTermChan:
 				rf.currentTerm = term
 				rf.votedFor = Const_Voted_Null
+				fmt.Printf(">>> Server %d switch role to: %d\n", rf.me, Role_Follower)
 			}
 		}
 	}
 }
 
 func (rf *Raft) startElection() {
-	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.votes = 1
 	rf.broadcastRequestVotes()
@@ -354,6 +351,7 @@ func (rf *Raft) startElection() {
 func (rf *Raft) startCandidate() {
 	//fmt.Printf(">>> Server %d in role : candidate\n", rf.me)
 	rf.startTimer(ElectionTimeout())
+	rf.currentTerm++
 	rf.startElection()
 
 	for {
@@ -366,9 +364,20 @@ func (rf *Raft) startCandidate() {
 			rf.votedFor = Const_Voted_Null
 			rf.switchRole(Role_Follower)
 			return
-		case <-rf.timer.C:
-			rf.resetTimer(ElectionTimeout())
-			rf.startElection()
+		default:
+			select {
+			case <-rf.resetTimerChan:
+				rf.switchRole(Role_Follower)
+				return
+			case term := <-rf.syncTermChan:
+				rf.currentTerm = term
+				rf.votedFor = Const_Voted_Null
+				rf.switchRole(Role_Follower)
+				return
+			case <-rf.timer.C:
+				rf.resetTimer(ElectionTimeout())
+				rf.startElection()
+			}
 		}
 	}
 }

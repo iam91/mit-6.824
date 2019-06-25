@@ -147,18 +147,18 @@ func TestFailAgree2B(t *testing.T) {
 
 	// agree despite one disconnected server?
 	cfg.one(102, servers-1, false)
-	//cfg.one(103, servers-1, false)
-	//time.Sleep(RaftElectionTimeout)
-	//cfg.one(104, servers-1, false)
-	//cfg.one(105, servers-1, false)
+	cfg.one(103, servers-1, false)
+	time.Sleep(RaftElectionTimeout)
+	cfg.one(104, servers-1, false)
+	cfg.one(105, servers-1, false)
 
 	// re-connect
-	//cfg.connect((leader + 1) % servers)
-
+	cfg.connect((leader + 1) % servers)
+	cfg.checkOneLeader() // todo 选举时间有点长
 	// agree with full set of servers?
-	//cfg.one(106, servers, true)
-	//time.Sleep(RaftElectionTimeout)
-	//cfg.one(107, servers, true)
+	cfg.one(106, servers, true)
+	time.Sleep(RaftElectionTimeout)
+	cfg.one(107, servers, true)
 
 	cfg.end()
 }

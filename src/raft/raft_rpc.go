@@ -46,6 +46,7 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 	rf.resetTimerChan <- true
 	if args.Entries != nil && len(args.Entries) != 0 {
 		rf.log = append(rf.log, args.Entries...)
+		//fmt.Printf("------ %d: %d, %d\n", rf.me, args.Entries[0].Command.(int), len(args.Entries))
 	}
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = IntMin(args.LeaderCommit, len(rf.log) - 1)
@@ -55,9 +56,8 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 }
 
 func (rf *Raft) broadcastAppendEntries() {
-	entries := make([]LogEntry, 0)
 
-	args := AppendEntriesArgs{
+	args0 := AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.me,
 		LeaderCommit: rf.commitIndex}
@@ -67,34 +67,53 @@ func (rf *Raft) broadcastAppendEntries() {
 	for i := range rf.peers {
 		if i != rf.me {
 			go func(peer int) {
-				prevIndex := rf.nextIndex[peer] - 1
-				if len(rf.log) - 1 >= rf.nextIndex[peer] {
-					entries = rf.log[rf.nextIndex[peer]:]
-				}
+				notMatched := true
 
-				args.PrevLogIndex = prevIndex
-				args.PrevLogTerm = rf.log[prevIndex].Term
-				args.Entries = entries
-				reply := AppendEntriesReply{}
-
-				ok := false
-				for !ok {
-					ok = rf.sendAppendEntries(peer, &args, &reply)
-				}
-
-				if reply.Term <= args.Term {
-					if !reply.Success {
-						prevIndex--
+				for notMatched {
+					var prevIndex int
+					var entries []LogEntry
+					if len(rf.log) - 1 >= rf.nextIndex[peer] {
+						entries = rf.log[rf.nextIndex[peer]:]
+						prevIndex = rf.nextIndex[peer] - 1
 					} else {
-						if len(entries) > 0 {
-							rf.nextIndex[peer] = prevIndex + len(entries) + 1
-							rf.matchIndex[peer] = prevIndex + len(entries)
-							commitCheckChan <- peer
-						}
+						prevIndex = len(rf.log) - 1
+						entries = make([]LogEntry, 0)
 					}
-				} else {
-					rf.syncTerm(reply.Term)
+
+					args := AppendEntriesArgs{
+						Term:         	args0.Term,
+						LeaderId:     	args0.LeaderId,
+						LeaderCommit: 	args0.LeaderCommit,
+						PrevLogIndex:	prevIndex,
+						PrevLogTerm: 	rf.log[prevIndex].Term,
+						Entries: 		entries}
+
+					reply := AppendEntriesReply{}
+
+					ok := false
+					for !ok {
+						ok = rf.sendAppendEntries(peer, &args, &reply)
+					}
+
+					if reply.Term <= args.Term {
+						if !reply.Success {
+							rf.nextIndex[peer]--
+						} else {
+							if len(entries) > 0 {
+								rf.nextIndex[peer] = prevIndex + len(entries) + 1
+								rf.matchIndex[peer] = prevIndex + len(entries)
+								//fmt.Printf("^^^^^^ %d, %d, %d | %d, %d\n",
+								//	peer, entries[0].Command, len(entries), args.Entries[0].Command, len(args.Entries))
+								commitCheckChan <- peer
+							}
+							notMatched = false
+						}
+					} else {
+						rf.syncTerm(reply.Term)
+						notMatched = false
+					}
 				}
+
 			}(i)
 		}
 	}
@@ -112,14 +131,14 @@ func (rf *Raft) mergeAppendEntries(commitCheckChan chan int) {
 		case peer := <- commitCheckChan:
 			// majority check whether to commit
 			matchIndex := rf.matchIndex[peer]
-			//fmt.Printf("[[[[[[[[[ %d: %d, %d\n", peer, matchIndex, lowerN)
+			fmt.Printf("[[[[[[[[[ %d: %d, %d, %d\n", peer, matchIndex, lowerN, rf.nextIndex[peer])
 			if matchIndex >= lowerN {
-				fmt.Printf("------- %d, %d, %d\n", peer, matchIndex, lowerN)
+				//fmt.Printf("------- %d, %d, %d, %d\n", peer, matchIndex, lowerN, len(rf.log))
 				//fmt.Printf(">>>>>>>>>>> %d, %d, %d\n", peer, rf.log[matchIndex].Term, rf.currentTerm)
 				if rf.log[matchIndex].Term == rf.currentTerm {
 					cnt++
 					if upperN < 0 {
-						upperN = rf.matchIndex[peer]
+						upperN = matchIndex
 					} else {
 						if matchIndex < upperN {
 							upperN = matchIndex
@@ -127,7 +146,7 @@ func (rf *Raft) mergeAppendEntries(commitCheckChan chan int) {
 					}
 				}
 			}
-			//fmt.Printf("(((((( %d, %d, %d\n", cnt, upperN, lowerN)
+			//fmt.Printf("(((((( %d: %d, %d, %d\n", rf.me, upperN, lowerN, rf.log[upperN].Command.(int))
 			if cnt >= len(rf.peers) / 2 && upperN >= lowerN{
 				rf.commitIndex = upperN
 				rf.applyCommand()
@@ -188,6 +207,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) broadcastRequestVotes() {
 	args := RequestVoteArgs{
 		Term: rf.currentTerm,
+		LastLogIndex: len(rf.log) - 1,
+		LastLogTerm: rf.log[len(rf.log) - 1].Term,
 		CandidateId: rf.me}
 
 	votesChan := make(chan int, 1)
