@@ -1,6 +1,5 @@
 package raft
 
-// todo
 // follower网络被切断term增加，重新加入时出现问题
 
 //
@@ -40,7 +39,7 @@ const Role_Candidate 	= 3
 
 const Const_Init_Term 				= 0
 const Const_Voted_Null 				= -1
-const Const_Min_Election_Timeout 	= 600
+const Const_Min_Election_Timeout 	= 500
 const Const_Max_Election_Timeout 	= 900
 const Const_Heartbeat 				= 150
 
@@ -124,9 +123,7 @@ type Raft struct {
 
 	roleChan		chan int
 	syncTermChan	chan int
-	votesChan		chan int
 	resetTimerChan	chan bool
-	commitCheckChan	chan int
 
 	applyCh			chan ApplyMsg
 	votes			int
@@ -233,55 +230,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) broadcastAppendEntries() {
-	entries := make([]LogEntry, 0)
-
-	args := AppendEntriesArgs{
-		Term:         rf.currentTerm,
-		LeaderId:     rf.me,
-		LeaderCommit: rf.commitIndex}
-
-	for i := range rf.peers {
-		if i != rf.me {
-			go func(peer int) {
-				prevIndex := rf.nextIndex[peer] - 1
-				if len(rf.log) - 1 >= rf.nextIndex[peer] {
-					entries = rf.log[rf.nextIndex[peer]:]
-				}
-
-				notMatched := true
-				for notMatched {
-					args.PrevLogIndex = prevIndex
-					args.PrevLogTerm = rf.log[prevIndex].Term
-					args.Entries = entries
-					reply := AppendEntriesReply{}
-
-					ok := false
-					for !ok {
-						ok = rf.sendAppendEntries(peer, &args, &reply)
-					}
-
-					if reply.Term <= args.Term { // todo: 此处逻辑需修改得更明晰
-						if !reply.Success {
-							prevIndex--
-						} else {
-							notMatched = false
-							if len(entries) > 0 {
-								rf.nextIndex[peer] = prevIndex + 2
-								rf.matchIndex[peer] = prevIndex + 1
-								rf.commitCheckChan <- peer
-							}
-						}
-					} else {
-						notMatched = false
-						rf.syncTerm(reply.Term)
-					}
-				}
-			}(i)
-		}
-	}
-}
-
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -357,7 +305,6 @@ func (rf *Raft) drainChannels() {
 		select {
 		case <- rf.syncTermChan:
 		case <- rf.resetTimerChan:
-		case <- rf.votesChan:
 		default:
 			return
 		}
@@ -368,8 +315,6 @@ func (rf *Raft) initChannels() {
 	rf.roleChan = make(chan int, 1)
 	rf.syncTermChan = make(chan int, 1)
 	rf.resetTimerChan = make(chan bool, 1)
-	rf.votesChan = make(chan int, len(rf.peers))
-	rf.commitCheckChan = make(chan int, 1)
 }
 
 func (rf *Raft) startFollower() {
@@ -392,36 +337,6 @@ func (rf *Raft) startFollower() {
 				rf.currentTerm = term
 				rf.votedFor = Const_Voted_Null
 			}
-		}
-	}
-}
-
-func (rf *Raft) broadcastRequestVotes() {
-	args := RequestVoteArgs{
-		Term: rf.currentTerm,
-		CandidateId: rf.me}
-
-	for i := range rf.peers {
-		if i != rf.me {
-			go func(peer int) {
-				reply := RequestVoteReply{}
-
-				ok := false
-				for !ok {
-					ok = rf.sendRequestVote(peer, &args, &reply)
-				}
-
-				if reply.Term <= args.Term { // todo: 此处逻辑应修改得更明晰
-					if ok &&reply.VoteGranted {
-						rf.mu.Lock()
-						rf.votes++
-						rf.votesChan <- 1
-						rf.mu.Unlock()
-					}
-				} else {
-					rf.syncTerm(reply.Term)
-				}
-			}(i)
 		}
 	}
 }
@@ -451,13 +366,6 @@ func (rf *Raft) startCandidate() {
 			rf.votedFor = Const_Voted_Null
 			rf.switchRole(Role_Follower)
 			return
-		case <-rf.votesChan:
-			if rf.votes >= len(rf.peers) / 2 {
-				rf.switchRole(Role_Leader)
-				return
-			} else {
-				rf.timer.Reset(time.Duration(ElectionTimeout()) * time.Millisecond)
-			}
 		case <-rf.timer.C:
 			rf.resetTimer(ElectionTimeout())
 			rf.startElection()
@@ -477,37 +385,8 @@ func (rf *Raft) startLeader() {
 	rf.broadcastAppendEntries()
 	rf.timer = rf.newTimer(Const_Heartbeat)
 
-	lowerN := rf.commitIndex + 1
-	upperN := -1
-	cnt := 0
-
 	for {
 		select {
-		case peer := <- rf.commitCheckChan:
-			// majority check whether to commit
-			matchIndex := rf.matchIndex[peer]
-			//fmt.Printf("[[[[[[[[[ %d: %d, %d\n", peer, matchIndex, lowerN)
-			if matchIndex >= lowerN {
-				//fmt.Printf(">>>>>>>>>>> %d, %d, %d\n", peer, rf.log[matchIndex].Term, rf.currentTerm)
-				if rf.log[matchIndex].Term == rf.currentTerm {
-					cnt++
-					if upperN < 0 {
-						upperN = rf.matchIndex[peer]
-					} else {
-						if matchIndex < upperN {
-							upperN = matchIndex
-						}
-					}
-				}
-			}
-			if cnt >= len(rf.peers) / 2 && upperN >= lowerN{
-				rf.commitIndex = upperN
-				rf.applyCommand()
-			}
-			lowerN = rf.commitIndex + 1
-			upperN = -1
-			cnt = 0
-
 		case term := <- rf.syncTermChan:
 			rf.currentTerm = term
 			rf.votedFor = Const_Voted_Null

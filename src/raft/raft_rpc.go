@@ -1,5 +1,10 @@
 package raft
 
+import (
+	"fmt"
+	"time"
+)
+
 type AppendEntriesArgs struct {
 	Term			int
 	LeaderId		int
@@ -49,6 +54,88 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 	rf.syncTerm(args.Term)
 }
 
+func (rf *Raft) broadcastAppendEntries() {
+	entries := make([]LogEntry, 0)
+
+	args := AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		LeaderCommit: rf.commitIndex}
+
+	commitCheckChan := make(chan int, 1)
+
+	for i := range rf.peers {
+		if i != rf.me {
+			go func(peer int) {
+				prevIndex := rf.nextIndex[peer] - 1
+				if len(rf.log) - 1 >= rf.nextIndex[peer] {
+					entries = rf.log[rf.nextIndex[peer]:]
+				}
+
+				args.PrevLogIndex = prevIndex
+				args.PrevLogTerm = rf.log[prevIndex].Term
+				args.Entries = entries
+				reply := AppendEntriesReply{}
+
+				ok := false
+				for !ok {
+					ok = rf.sendAppendEntries(peer, &args, &reply)
+				}
+
+				if reply.Term <= args.Term {
+					if !reply.Success {
+						prevIndex--
+					} else {
+						if len(entries) > 0 {
+							rf.nextIndex[peer] = prevIndex + len(entries) + 1
+							rf.matchIndex[peer] = prevIndex + len(entries)
+							commitCheckChan <- peer
+						}
+					}
+				} else {
+					rf.syncTerm(reply.Term)
+				}
+			}(i)
+		}
+	}
+
+	go rf.mergeAppendEntries(commitCheckChan)
+}
+
+func (rf *Raft) mergeAppendEntries(commitCheckChan chan int) {
+	lowerN := rf.commitIndex + 1
+	upperN := -1
+	cnt := 0
+
+	for {
+		select {
+		case peer := <- commitCheckChan:
+			// majority check whether to commit
+			matchIndex := rf.matchIndex[peer]
+			//fmt.Printf("[[[[[[[[[ %d: %d, %d\n", peer, matchIndex, lowerN)
+			if matchIndex >= lowerN {
+				fmt.Printf("------- %d, %d, %d\n", peer, matchIndex, lowerN)
+				//fmt.Printf(">>>>>>>>>>> %d, %d, %d\n", peer, rf.log[matchIndex].Term, rf.currentTerm)
+				if rf.log[matchIndex].Term == rf.currentTerm {
+					cnt++
+					if upperN < 0 {
+						upperN = rf.matchIndex[peer]
+					} else {
+						if matchIndex < upperN {
+							upperN = matchIndex
+						}
+					}
+				}
+			}
+			//fmt.Printf("(((((( %d, %d, %d\n", cnt, upperN, lowerN)
+			if cnt >= len(rf.peers) / 2 && upperN >= lowerN{
+				rf.commitIndex = upperN
+				rf.applyCommand()
+			}
+		}
+	}
+}
+
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
@@ -96,4 +183,53 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 	}
 	rf.syncTerm(args.Term)
+}
+
+func (rf *Raft) broadcastRequestVotes() {
+	args := RequestVoteArgs{
+		Term: rf.currentTerm,
+		CandidateId: rf.me}
+
+	votesChan := make(chan int, 1)
+
+	for i := range rf.peers {
+		if i != rf.me {
+			go func(peer int) {
+				reply := RequestVoteReply{}
+
+				ok := false
+				for !ok {
+					ok = rf.sendRequestVote(peer, &args, &reply)
+				}
+
+				if reply.Term <= args.Term {
+					if ok &&reply.VoteGranted {
+						rf.mu.Lock()
+						rf.votes++
+						votesChan <- 1
+						rf.mu.Unlock()
+					}
+				} else {
+					rf.syncTerm(reply.Term)
+				}
+			}(i)
+		}
+	}
+
+	// 汇总投票结果
+	go rf.mergeRequestVotes(votesChan)
+}
+
+func (rf *Raft) mergeRequestVotes(votesChan chan int) {
+	for  {
+		select {
+		case <- votesChan:
+			if rf.votes >= len(rf.peers) / 2 {
+				rf.switchRole(Role_Leader)
+				return
+			} else {
+				rf.timer.Reset(time.Duration(ElectionTimeout()) * time.Millisecond)
+			}
+		}
+	}
 }
