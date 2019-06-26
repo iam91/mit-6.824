@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -45,8 +44,8 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 	reply.Success = true
 	rf.resetTimerChan <- true
 	if args.Entries != nil && len(args.Entries) != 0 {
+		rf.log = rf.log[:args.PrevLogIndex + 1] // very important
 		rf.log = append(rf.log, args.Entries...)
-		//fmt.Printf("------ %d: %d, %d\n", rf.me, args.Entries[0].Command.(int), len(args.Entries))
 	}
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = IntMin(args.LeaderCommit, len(rf.log) - 1)
@@ -102,8 +101,6 @@ func (rf *Raft) broadcastAppendEntries() {
 							if len(entries) > 0 {
 								rf.nextIndex[peer] = prevIndex + len(entries) + 1
 								rf.matchIndex[peer] = prevIndex + len(entries)
-								//fmt.Printf("^^^^^^ %d, %d, %d | %d, %d\n",
-								//	peer, entries[0].Command, len(entries), args.Entries[0].Command, len(args.Entries))
 								commitCheckChan <- peer
 							}
 							notMatched = false
@@ -131,10 +128,7 @@ func (rf *Raft) mergeAppendEntries(commitCheckChan chan int) {
 		case peer := <- commitCheckChan:
 			// majority check whether to commit
 			matchIndex := rf.matchIndex[peer]
-			fmt.Printf("[[[[[[[[[ %d: %d, %d, %d\n", peer, matchIndex, lowerN, rf.nextIndex[peer])
 			if matchIndex >= lowerN {
-				//fmt.Printf("------- %d, %d, %d, %d\n", peer, matchIndex, lowerN, len(rf.log))
-				//fmt.Printf(">>>>>>>>>>> %d, %d, %d\n", peer, rf.log[matchIndex].Term, rf.currentTerm)
 				if rf.log[matchIndex].Term == rf.currentTerm {
 					cnt++
 					if upperN < 0 {
@@ -146,7 +140,6 @@ func (rf *Raft) mergeAppendEntries(commitCheckChan chan int) {
 					}
 				}
 			}
-			//fmt.Printf("(((((( %d: %d, %d, %d\n", rf.me, upperN, lowerN, rf.log[upperN].Command.(int))
 			if cnt >= len(rf.peers) / 2 && upperN >= lowerN{
 				rf.commitIndex = upperN
 				rf.applyCommand()

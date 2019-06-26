@@ -250,9 +250,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := rf.role == Role_Leader
 
 	if isLeader {
+		rf.mu.Lock()
 		index = len(rf.log)
 		term = rf.currentTerm
 		rf.log = append(rf.log, LogEntry{term, index, command})
+		rf.mu.Unlock()
 	}
 	return index, term, isLeader
 }
@@ -314,6 +316,21 @@ func (rf *Raft) initChannels() {
 	rf.resetTimerChan = make(chan bool, 1)
 }
 
+func (rf *Raft) initIndices() {
+	for i := range rf.nextIndex {
+		rf.nextIndex[i] = len(rf.log)
+	}
+}
+
+func (rf *Raft) startElection() {
+	rf.votedFor = rf.me
+	rf.votes = 1
+	rf.broadcastRequestVotes()
+	if DEBUG {
+		fmt.Printf(">>>> Server %d start election at term %d\n", rf.me, rf.currentTerm)
+	}
+}
+
 func (rf *Raft) startFollower() {
 	//fmt.Printf(">>> Server %d in role : follower\n", rf.me)
 	rf.startTimer(ElectionTimeout())
@@ -336,15 +353,6 @@ func (rf *Raft) startFollower() {
 				fmt.Printf(">>> Server %d switch role to: %d\n", rf.me, Role_Follower)
 			}
 		}
-	}
-}
-
-func (rf *Raft) startElection() {
-	rf.votedFor = rf.me
-	rf.votes = 1
-	rf.broadcastRequestVotes()
-	if DEBUG {
-		fmt.Printf(">>>> Server %d start election at term %d\n", rf.me, rf.currentTerm)
 	}
 }
 
@@ -379,12 +387,6 @@ func (rf *Raft) startCandidate() {
 				rf.startElection()
 			}
 		}
-	}
-}
-
-func (rf *Raft) initIndices() {
-	for i := range rf.nextIndex {
-		rf.nextIndex[i] = len(rf.log)
 	}
 }
 

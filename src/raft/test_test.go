@@ -154,7 +154,6 @@ func TestFailAgree2B(t *testing.T) {
 
 	// re-connect
 	cfg.connect((leader + 1) % servers)
-	cfg.checkOneLeader() // todo 选举时间有点长
 	// agree with full set of servers?
 	cfg.one(106, servers, true)
 	time.Sleep(RaftElectionTimeout)
@@ -169,11 +168,9 @@ func TestFailNoAgree2B(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): no agreement if too many followers disconnect")
-
 	cfg.one(10, servers, false)
-
-	// 3 of 5 followers disconnect
 	leader := cfg.checkOneLeader()
+	// 3 of 5 followers disconnect
 	cfg.disconnect((leader + 1) % servers)
 	cfg.disconnect((leader + 2) % servers)
 	cfg.disconnect((leader + 3) % servers)
@@ -211,6 +208,7 @@ func TestFailNoAgree2B(t *testing.T) {
 
 	cfg.one(1000, servers, true)
 
+	fmt.Printf("leader: %d, leader2: %d\n", leader, leader2)
 	cfg.end()
 }
 
