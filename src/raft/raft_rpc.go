@@ -61,7 +61,7 @@ func (rf *Raft) broadcastAppendEntries() {
 		LeaderId:     rf.me,
 		LeaderCommit: rf.commitIndex}
 
-	commitCheckChan := make(chan int, 1)
+	commitCheckChan := make(chan int, len(rf.peers) - 1)
 
 	for i := range rf.peers {
 		if i != rf.me {
@@ -204,7 +204,7 @@ func (rf *Raft) broadcastRequestVotes() {
 		LastLogTerm: rf.log[len(rf.log) - 1].Term,
 		CandidateId: rf.me}
 
-	votesChan := make(chan int, 1)
+	votesChan := make(chan int, len(rf.peers) - 1)
 
 	for i := range rf.peers {
 		if i != rf.me {
@@ -220,8 +220,8 @@ func (rf *Raft) broadcastRequestVotes() {
 					if ok &&reply.VoteGranted {
 						rf.mu.Lock()
 						rf.votes++
-						votesChan <- 1
 						rf.mu.Unlock()
+						votesChan <- 1
 					}
 				} else {
 					rf.syncTerm(reply.Term)
